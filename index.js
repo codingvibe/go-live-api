@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
 import fetch from 'node-fetch';
+import fs from 'fs';
 import http from 'http';
 import https from 'https';
 import { TwitterApi } from 'twitter-api-v2';
@@ -151,7 +152,6 @@ app.post('/eventsub', async (req, res) => {
 
   if (true === verifyMessage(hmac, req.headers[TWITCH_MESSAGE_SIGNATURE])) {
     let notification = JSON.parse(req.body);
-    console.log(notification);
 
     if (MESSAGE_TYPE_NOTIFICATION === req.headers[MESSAGE_TYPE]) {
       if (notification && notification.subscription) {
@@ -220,5 +220,8 @@ function getHmac(secret, request) {
 
  // Verify whether your signature matches Twitch's signature.
 function verifyMessage(hmac, verifySignature) {
+  if (!hmac || !verifySignature) {
+    return false;
+  }
   return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(verifySignature));
 }
