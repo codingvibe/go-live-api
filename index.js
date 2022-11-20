@@ -1,25 +1,48 @@
+import cors from 'cors';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
+import session from 'express-session';
 import fetch from 'node-fetch';
-import fs from 'fs';
 import http from 'http';
-import https from 'https';
-import { TwitterApi } from 'twitter-api-v2';
+import jwt from 'jsonwebtoken';
+import { Validator } from 'jsonschema';
 import { TwitchClient } from './lib/twitchClient.js';
+import { UserDao } from './lib/dao.js';
+import { TwitterClient } from './lib/twitterClient.js';
+
+const AUTH_SECRET = process.env.AUTH_SECRET;
+const SESSION_SECRET = process.env.SESSION_SECRET;
 
 const APP_PORT = process.env.APP_PORT || 8080;
 const DEPLOYED = process.env.DEPLOYED || false;
-const TWITTER_API_KEY = process.env.TWITTER_API_KEY;
-const TWITTER_API_SECRET = process.env.TWITTER_API_SECRET;
-const TWITTER_ACCESS_TOKEN = process.env.TWITTER_ACCESS_TOKEN;
-const TWITTER_ACCESS_SECRET = process.env.TWITTER_ACCESS_SECRET;
+const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
+const TWITTER_STATE_TTL = process.env.TWITTER_STATE_TTL || 5*60*1000;
+const TWITTER_REDIRECT_URL = process.env.TWITTER_REDIRECT_URL || `http://localhost:${APP_PORT}/user/twitterLoginResponse`;
+const VALID_TWITTER_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif"];
+const TWITTER_IMAGE_UPLOAD_LIMITS = {
+  "image/png": 5*1000*1000,
+  "image/jpeg": 5*1000*1000,
+  "image/gif": 15*1000*1000
+}
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
-const TWITCH_REFRESH_TOKEN = process.env.TWITCH_REFRESH_TOKEN;
 const TWITCH_EVENT_SUB_SECRET = process.env.TWITCH_EVENT_SUB_SECRET;
+const TWITCH_STATE_TTL = process.env.TWITCH_STATE_TTL || 5*60*1000;
+const TWITCH_REDIRECT_URL = process.env.TWITCH_REDIRECT_URL || `http://localhost:${APP_PORT}/twitchLoginResponse`;
+
+const POSTGRES_HOST = process.env.POSTGRES_HOST
+const POSTGRES_PORT = process.env.POSTGRES_PORT
+const POSTGRES_USERNAME = process.env.POSTGRES_USERNAME
+const POSTGRES_PASSWORD = process.env.POSTGRES_PASSWORD
+const POSTGRESS_DATABASE = process.env.POSTGRESS_DATABASE
+
+const GO_LIVE_TEXT_LIMIT = process.env.GO_LIVE_TEXT_LIMIT || 2048;
+
+const userDao = new UserDao(POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USERNAME, POSTGRES_PASSWORD, POSTGRESS_DATABASE);
 
 const ANIME_GIFS = [
   {
@@ -68,7 +91,7 @@ const ANIME_GIFS = [
   },
   {
     "url": "https://assets.website-files.com/622a260c6d1af1d0042f8daf/62bf2ad830f59188e7bae00e_codinganime%20(1).gif",
-    "altText": "A programmer from Stein's Gate sits hunched over his keyboard, the scene lit only by the light of the monitor. Hits very close to home."
+    "altText": "Daruuu from Stein's Gate sits hunched over his keyboard, the scene lit only by the light of the monitor. Hits very close to home."
   },
   {
     "url": "https://i.makeagif.com/media/5-25-2022/jLzbVG.gif",
@@ -94,58 +117,332 @@ const MESSAGE_TYPE_REVOCATION = 'revocation';
 const STREAM_ONLINE = "stream.online";
 
 /////////////////////////// Set Up Server ///////////////////////////
-const twitterClient = new TwitterApi({
-  appKey: TWITTER_API_KEY,
-  appSecret: TWITTER_API_SECRET,
-  accessToken: TWITTER_ACCESS_TOKEN,
-  accessSecret: TWITTER_ACCESS_SECRET,
-});
+const twitterClient = new TwitterClient(TWITTER_CLIENT_ID, TWITTER_CLIENT_SECRET, TWITTER_STATE_TTL, TWITTER_REDIRECT_URL);
 
-const twitchClient = new TwitchClient(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET);
+const twitchClient = new TwitchClient(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_EVENT_SUB_SECRET, TWITCH_REDIRECT_URL, TWITCH_STATE_TTL);
+const jsonValidator =  new Validator();
+const imageUploadSchema = {
+  "id": "/uploadImages",
+  "type": "array",
+  "items": {
+    "properties": {
+      "id": {"type": "string"},
+      "url": {"type": "string"},
+      "altText": {"type": "string"},
+    },
+    "required": ["url"]
+  }
+}
 
 const app = express();
 
 app.use([
-  express.raw({ type: 'application/json'}), // Need raw message body for signature verification
+  express.raw({ type: 'application/json'}), // Need raw message body for signature verification,
 ]);
 
-let server;
-if (DEPLOYED) {
-  const privateKey = fs.readFileSync('/etc/letsencrypt/live/twitchbotapi.codingvibe.dev/privkey.pem');
-  const certificate = fs.readFileSync('/etc/letsencrypt/live/twitchbotapi.codingvibe.dev/fullchain.pem');
+app.use(session({
+  saveUninitialized: false,
+  resave: false,
+  secret: SESSION_SECRET,
+  proxy: DEPLOYED,
+  cookie: {
+    httpOnly: DEPLOYED,
+    secure: DEPLOYED,
+    sameSite: true
+  }
+}));
 
-  const credentials = {key: privateKey, cert: certificate};
-  server = https.createServer(credentials, app);
-  server.listen(APP_PORT);
-} else {
-  server = http.createServer(app);
-  server.listen(APP_PORT);
+const whitelist = ['https://golive.codingvibe.dev']
+if (!DEPLOYED) {
+  whitelist.push('http://localhost:3000', 'http://localhost:8080', undefined);
 }
 
+var corsOptions = {
+  origin: function (origin, callback) {
+    console.log(`origin: ${origin}`)
+    if (whitelist.indexOf(origin) !== -1) {
+      callback(null, true)
+    } else {
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
+  credentials: true
+}
+app.use(cors(corsOptions));
+
+const authEndpoints = express.Router();
+app.use('/user', authEndpoints);
+
+const server = http.createServer(app);
+server.listen(APP_PORT);
+
 /*
-TODO FOR PUBLIC CONSUMPTION
-- Get this on a server
-- Set up user database for tokens
-- Do Twitter auth flow
-  - save refresh token
-- Do Twitch auth flow
-  - save refresh token
-- Add EventSub subscription when first Twitch auth flow happens
-- Modify existing flow to use dynamic creds
-- Remove static creds from .env file
-- Design and implement a UI
-  - First log in with Twitch
-  - Check if connected already
-  - If not, add Twitter button for auth
-  - Receive callback, exchange for tokens, save in db
-- Support adding of image URLs and alt text
-- Get media type from media retrieval call
+TODO FOR PUBLIC CONSUMPTIONS
 - Add retries for failures
   - Processing queue?
 
 Stretch?
 - Add Discord
 */
+
+app.get('/twitchLogin', async(_, res) => {
+  // Potential optimization: If session token exists and is valid,
+  // return a 204, so the front end doesn't go through the auth flow.
+  const twitchLoginUrl = twitchClient.getLoginUrl();
+  res.redirect(twitchLoginUrl);
+});
+
+app.get('/twitchLoginResponse', async (req, res) => {
+  const state = req.query.state;
+  if (!state) {
+    res.status(401).send({"error": "No Twitch state supplied"});
+    return;
+  }
+  if (!twitchClient.isStateValid(state)) {
+    res.status(401).send({"error": "Unrecognized or expired Twitch state"});
+    return;
+  }
+
+  const err = req.query.error;
+  if (err) {
+    const errDesc = decodeURIComponent(req.query.error_description);
+    console.error(`${err}: ${errDesc}`);
+    res.status(204);
+    return;
+  }  
+
+  const code = req.query.code;
+  const tokens = await twitchClient.getTokens(code, state);
+  const twitchUser = await twitchClient.getUser(tokens.accessToken);
+
+  const userConnections = await userDao.getUserConnections(twitchUser.login);
+  if (!userConnections) {
+    await userDao.createNewUser(twitchUser.login, tokens.refreshToken);
+  } else {
+    for (let i = 0; i < userConnections.length; i++) {
+      if (userConnections[i].type == "twitch") {
+        userConnections[i].refreshToken = tokens.refreshToken;
+      }
+    }
+    await userDao.setUserConnections(twitchUser.login, userConnections);
+  }
+
+  const hasGoLiveEventSub = await twitchClient.hasGoLiveEventSub(twitchUser.id)
+  if (!hasGoLiveEventSub) {
+    await twitchClient.createGoLiveEventSub(twitchUser.id);
+  }
+
+  const signedJwt = jwt.sign( {
+    "twitchLogin": twitchUser.login
+  }, AUTH_SECRET, { expiresIn: 30*60, issuer: "codingvibe" });
+
+  req.session.token = signedJwt;
+  req.session.save((err) => {
+    if (err) {
+      console.error(err);
+      res.status(500).send('There was an error authenticating the user.');
+    } else {
+      res.sendStatus(200);
+    }
+  });
+});
+
+authEndpoints.use((req, res, next) => {
+  if (!req.session || !req.session.token) {
+    res.sendStatus(401);
+    return;
+  }
+  try {
+    jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+    next();
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(401);
+  }
+});
+
+authEndpoints.get('/loggedIn', async(req, res) => {
+  res.sendStatus(200);
+});
+
+authEndpoints.get('/connections', async(req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const userConnections = await userDao.getUserConnections(twitchLogin);
+  const platforms = userConnections.map(connection => connection.type).filter(platform => platform != "twitch");
+  res.send(platforms);
+});
+
+authEndpoints.delete('/connections', async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const platformToRemove = req.query.platform;
+  const userConnections = await userDao.getUserConnections(twitchLogin);
+  const newPlatforms = userConnections.filter(platform => !(platformToRemove == platform.type));
+  await userDao.setUserConnections(twitchLogin, newPlatforms);
+  if (platformToRemove == "twitch") {
+    delete req.session.token;
+  }
+  res.sendStatus(204);
+});
+
+authEndpoints.get('/goLiveText', async(req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const goLiveText = await userDao.getGoLiveText(twitchLogin);
+  if (!goLiveText) {
+    res.sendStatus(404);
+    return;
+  }
+  res.send({
+    "goLiveText": goLiveText
+  });
+});
+
+authEndpoints.put("/goLiveText", async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const reqBody = JSON.parse(req.body);
+  if (!reqBody || !reqBody.goLiveText) {
+    res.sendStatus(400);
+    return;
+  } else if (reqBody.goLiveText.length > GO_LIVE_TEXT_LIMIT) {
+    res.status(400).send({"error": `Go live text exceeds character limit ${GO_LIVE_TEXT_LIMIT}`});
+    return;
+  }
+  await userDao.setGoLiveText(twitchLogin, reqBody.goLiveText);
+  res.sendStatus(200);
+});
+
+authEndpoints.get('/images', async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const images = await userDao.getImages(twitchLogin);
+  res.send(images);
+});
+
+authEndpoints.post('/images', async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  try {
+    const images = JSON.parse(req.body);
+    if (!(images instanceof Array) || images.length == 0 ||
+        !jsonValidator.validate(images, imageUploadSchema).valid) {
+      res.status(400).send({"error": "Bad image post body"});
+      return;
+    }
+    // This is probably too clever for my own good.
+    const invalidImages = (await Promise.all(images.map(image => image.url)
+                                .map(async (image) => isInvalidImage(image))))
+                                .map((invalid, index) => invalid ? images[index].url : null)
+                                .filter(imageUrl => imageUrl != null);
+    if (invalidImages.length > 0) {
+      res.status(400).send({"error": `Invalid images detected. Either too big or bad content type on ${invalidImages.join(", ")}`});
+      return;
+    }
+    await userDao.addImages(twitchLogin, images);
+    res.sendStatus(200);
+  } catch(e) {
+    console.error("Bad post body", e);
+    res.status(400).send({"error": "Malformed JSON"}); 
+  }
+});
+
+authEndpoints.put("/images", async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  try {
+    const images = JSON.parse(req.body);
+    if (!(images instanceof Array) || images.length == 0 ||
+        !jsonValidator.validate(images, imageUploadSchema).valid) {
+      res.status(400).send({"error": "Bad image post body"});
+      return;
+    }
+    console.log(images);
+    // This is probably too clever for my own good.
+    const invalidImages = (await Promise.all(images.map(image => image.url)
+                                .map(async(image) => isInvalidImage(image))))
+                                .map((invalid, index) => invalid ? images[index].url : null)
+                                .filter(imageUrl => imageUrl != null);
+    if (invalidImages.length > 0) {
+      res.status(400).send({"error": `Invalid images detected. Either too big or bad content type on ${invalidImages.join(", ")}`});
+      return;
+    }
+    const dbImages = await userDao.getImages(twitchLogin);
+    const dbImageMap = dbImages.reduce((obj, item) => (obj[item.id] = item, obj) ,{});
+    const newImages = [];
+    const updatedImages = [];
+
+    images.filter(image => {
+      return !image.id || !(image.id in dbImageMap) ||
+              image.altText != dbImageMap[image.id].altText ||
+              image.url != dbImageMap[image.id].url
+    }).forEach(image => {
+      if (image.id && image.id in dbImageMap) {
+        updatedImages.push(image);
+      } else {
+        newImages.push(image);
+      }
+    });
+
+    const imageMap = images.reduce((obj, item) => (obj[item.id] = item, obj) ,{});
+    const deletedImages = dbImages.filter(image => !(image.id in imageMap));
+    if (newImages.length > 0) {
+      await userDao.addImages(twitchLogin, newImages);
+    }
+    if (updatedImages.length > 0) {
+      await userDao.updateImages(twitchLogin, updatedImages)
+    }
+    if (deletedImages.length > 0) {
+      await userDao.removeImages(twitchLogin, deletedImages);
+    }
+    res.sendStatus(201);
+  } catch(e) {
+    console.error("Bad post body", e);
+    res.status(400).send({"error": "Malformed JSON"}); 
+  }
+});
+
+authEndpoints.delete('/images/:imageId', async (req, res) => {
+  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const imageId = req.params.imageId;
+  await userDao.removeImage(twitchLogin, imageId);
+  res.sendStatus(200);
+});
+
+authEndpoints.get('/twitterLogin', async(_, res) => {
+  const twitterLoginUrl = twitterClient.getAuthUrl();
+  res.redirect(twitterLoginUrl);
+});
+
+authEndpoints.get('/twitterLoginResponse', async (req, res) => {
+  const state = req.query.state;
+  const code = req.query.code;
+  try {
+    const tokens = await twitterClient.getAuthTokens(state, code);
+    const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+    
+    const userConnections = await userDao.getUserConnections(twitchLogin);
+    if (!userConnections) {
+      res.status(404).send({"error": "Unable to find Twitch user"});
+      return;
+    } else {
+      let found = false;
+      for (let i = 0; i < userConnections.length; i++) {
+        if (userConnections[i].type == "twitter") {
+          userConnections[i].refreshToken = tokens.refreshToken;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        userConnections.push({
+          "type": "twitter",
+          "refreshToken": tokens.refreshToken
+        });
+      }
+      await userDao.setUserConnections(twitchLogin, userConnections);
+    }
+  } catch (e) {
+    console.error(e);
+    res.status(401).send({"error": "Unable to authenticate login response"});
+    return;
+  }
+  res.sendStatus(200);
+});
 
 app.post('/eventsub', async (req, res) => {
   let hmac = HMAC_PREFIX + getHmac(TWITCH_EVENT_SUB_SECRET, req);
@@ -159,11 +456,29 @@ app.post('/eventsub', async (req, res) => {
           case STREAM_ONLINE:
             const broadcasterId = notification.event.broadcaster_user_id;
             const broadcasterName = notification.event.broadcaster_user_login;
-            const accessToken = await twitchClient.refreshTwitchAuthToken(TWITCH_REFRESH_TOKEN)
+            const userConnections = await userDao.getUserConnections(broadcasterName);
+            if (!userConnections) {
+              console.error(`Unable to fetch user connections for ${broadcasterName}`);
+              res.sendStatus(204);
+              return;
+            }
+            const image = await userDao.getRandomImage(broadcasterName);
+            const twitchRefreshToken = getRefreshToken(userConnections, "twitch");
+            const { accessToken, refreshToken } = await twitchClient.refreshTwitchAuthToken(twitchRefreshToken);
+            await setRefreshToken(broadcasterName, userConnections, "twitch", refreshToken);
             const streamInfo = await twitchClient.getCurrentChannelInfo(accessToken, broadcasterId);
-            const title = `${streamInfo.title} https://twitch.tv/${broadcasterName}`;
-            const gif = getRandomGif();
-            console.log(`Created tweet for ${broadcasterName} using image ${gif.url} with text ${title}`);
+            const goLiveTextTemplate = await userDao.getGoLiveText(broadcasterName);
+            const goLiveText = fillOutTemplate(goLiveTextTemplate, streamInfo, broadcasterName);
+            for(const connection of userConnections){
+              switch(connection.type) {
+                case "twitter":
+                  await createTweet(connection.refreshToken, broadcasterName, goLiveText, image);
+                  break;
+                case "twitch":
+                  // do nothing
+                  break;
+              }
+            }
             break;
           default:
             //do nothing;
@@ -192,20 +507,52 @@ app.post('/eventsub', async (req, res) => {
   }
 });
 
-function getRandomGif() {
-  return ANIME_GIFS[Math.floor(Math.random()*ANIME_GIFS.length)]
+function fillOutTemplate(goLiveTextTemplate, streamInfo, twitchName) {
+  return goLiveTextTemplate
+            ?.replace("{{streamTitle}}", streamInfo.title)
+            ?.replace("{{twitchName}}", twitchName);
 }
 
-async function createTweet(twitterClient, message, image, altText) {
-  if (image) {
-    const data = await fetch(image);
-    const blob = await (await data.blob()).arrayBuffer();
-    const mediaId = await twitterClient.v1.uploadMedia(Buffer.from(blob), { mimeType: "image/gif" });
-    await twitterClient.v1.createMediaMetadata(mediaId, { alt_text: { text: altText } });
-    return await twitterClient.v1.tweet(message, { media_ids: [ mediaId ] });
-  } else {
-    return await twitterClient.v2.tweet(message);
+async function createTweet(refreshToken, twitchName, tweetText, image) {
+  const imageUrl = (image && image.url) ? image.url : null;
+  const altText = (image && image.altText) ? image.altText : null;
+  const newRefreshToken = await twitterClient.createTweet(refreshToken, tweetText, imageUrl, altText);
+  if (newRefreshToken) {
+    await userDao.updateRefreshToken(twitchName, "twitter", newRefreshToken);
+    console.log(`Created tweet for ${twitchName} using image ${imageUrl} with text ${tweetText}`);
   }
+}
+
+function getRefreshToken(userConnections, platform) {
+  return userConnections
+    .filter(connection => connection.type == platform)
+    .map(connection => connection.refreshToken);
+}
+
+async function setRefreshToken(twitchName, userConnections, platform, refreshToken) {
+  for (let i = 0; i < userConnections.length; i++) {
+    if (userConnections[i].type == platform) {
+      userConnections[i].refreshToken = refreshToken;
+    }
+  }
+  return await userDao.setUserConnections(twitchName, userConnections);
+}
+
+async function isInvalidImage(imageUrl) {
+  const resp = await fetch(imageUrl, {
+    'method': 'HEAD'
+  });
+  const contentType = resp.headers.get("content-type");
+  const contentLength = resp.headers.get("content-length");
+  if (!VALID_TWITTER_IMAGE_MEDIA_TYPES.includes(contentType)) {
+    console.error(`invalid format ${contentType}`)
+    return true;
+  }
+  if (contentLength && TWITTER_IMAGE_UPLOAD_LIMITS[contentType] < contentLength) {
+    console.error(`invalid size ${contentLength}`)
+    return true;
+  }
+  return false;
 }
 
 // Get the HMAC.

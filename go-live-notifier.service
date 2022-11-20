@@ -1,0 +1,10 @@
+[Unit]
+Description=GoLive Notifier API
+
+[Service]
+WorkingDirectory=/root/go-live-api
+ExecStart=node index.js
+Restart=true
+
+[Install]
+WantedBy=multi-user.target
