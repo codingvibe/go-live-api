@@ -185,6 +185,11 @@ Stretch?
 - Add Discord
 */
 
+app.get('/twitterLogin', async(_, res) => {
+  const twitterLoginUrl = twitterClient.getAuthUrl();
+  res.redirect(twitterLoginUrl);
+});
+
 app.get('/twitchLogin', async(_, res) => {
   // Potential optimization: If session token exists and is valid,
   // return a 204, so the front end doesn't go through the auth flow.
@@ -415,11 +420,6 @@ authEndpoints.delete('/images/:imageId', async (req, res) => {
   const imageId = req.params.imageId;
   await userDao.removeImage(twitchLogin, imageId);
   res.sendStatus(200);
-});
-
-authEndpoints.get('/twitterLogin', async(_, res) => {
-  const twitterLoginUrl = twitterClient.getAuthUrl();
-  res.redirect(twitterLoginUrl);
 });
 
 authEndpoints.get('/twitterLoginResponse', async (req, res) => {
