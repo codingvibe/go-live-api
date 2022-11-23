@@ -248,7 +248,16 @@ app.get('/twitchLoginResponse', async (req, res) => {
 });
 
 function getToken(req) {
-  return req.session?.token || req.headers.cookie
+  if (req.session?.token) {
+    return req.session?.token;
+  }
+  const cookieArr = req.headers.cookie?.split(';');
+  const cookieMap = {};
+  for (const cookie of cookieArr) {
+    const split = cookie.trim().split('=');
+    cookieMap[split[0]] = split[1];
+  }
+  return cookieMap['token'];
 }
 
 authEndpoints.use((req, res, next) => {
