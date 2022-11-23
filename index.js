@@ -291,6 +291,7 @@ authEndpoints.get('/connections', async(req, res) => {
   res.send(platforms);
 });
 
+authEndpoints.options('/connections');
 authEndpoints.delete('/connections', async (req, res) => {
   const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const platformToRemove = req.query.platform;
@@ -315,7 +316,8 @@ authEndpoints.get('/goLiveText', async(req, res) => {
   });
 });
 
-authEndpoints.put("/goLiveText", async (req, res) => {
+authEndpoints.options('/images');
+authEndpoints.put("/images", async (req, res) => {
   const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const reqBody = JSON.parse(req.body);
   if (!reqBody || !reqBody.goLiveText) {
@@ -361,6 +363,7 @@ authEndpoints.post('/images', async (req, res) => {
   }
 });
 
+authEndpoints.options('/images');
 authEndpoints.put("/images", async (req, res) => {
   const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   try {
@@ -415,6 +418,7 @@ authEndpoints.put("/images", async (req, res) => {
   }
 });
 
+authEndpoints.options('/images/:imageId');
 authEndpoints.delete('/images/:imageId', async (req, res) => {
   const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const imageId = req.params.imageId;
