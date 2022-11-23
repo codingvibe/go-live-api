@@ -236,24 +236,29 @@ app.get('/twitchLoginResponse', async (req, res) => {
     "twitchLogin": twitchUser.login
   }, AUTH_SECRET, { expiresIn: 30*60, issuer: "codingvibe" });
 
-  req.session.token = signedJwt;
+  getToken(req) = signedJwt;
   req.session.save((err) => {
     if (err) {
       console.error(err);
       res.status(500).send('There was an error authenticating the user.');
     } else {
-      res.sendStatus(200);
+      res.status(200).send(signedJwt);
     }
   });
 });
 
+function getToken(req) {
+  return req.session?.token || req.headers.cookie
+}
+
 authEndpoints.use((req, res, next) => {
-  if (!req.session || !req.session.token) {
-    res.sendStatus(401);
+  const token = getToken(req);
+  if (!token) {
+    res.sendStatus(401); 
     return;
   }
   try {
-    jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+    jwt.verify(token, AUTH_SECRET, { issuer: "codingvibe"});
     next();
   } catch (e) {
     console.error(e);
@@ -266,26 +271,26 @@ authEndpoints.get('/loggedIn', async(req, res) => {
 });
 
 authEndpoints.get('/connections', async(req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const userConnections = await userDao.getUserConnections(twitchLogin);
   const platforms = userConnections.map(connection => connection.type).filter(platform => platform != "twitch");
   res.send(platforms);
 });
 
 authEndpoints.delete('/connections', async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const platformToRemove = req.query.platform;
   const userConnections = await userDao.getUserConnections(twitchLogin);
   const newPlatforms = userConnections.filter(platform => !(platformToRemove == platform.type));
   await userDao.setUserConnections(twitchLogin, newPlatforms);
   if (platformToRemove == "twitch") {
-    delete req.session.token;
+    delete getToken(req);
   }
   res.sendStatus(204);
 });
 
 authEndpoints.get('/goLiveText', async(req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const goLiveText = await userDao.getGoLiveText(twitchLogin);
   if (!goLiveText) {
     res.sendStatus(404);
@@ -297,7 +302,7 @@ authEndpoints.get('/goLiveText', async(req, res) => {
 });
 
 authEndpoints.put("/goLiveText", async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const reqBody = JSON.parse(req.body);
   if (!reqBody || !reqBody.goLiveText) {
     res.sendStatus(400);
@@ -311,13 +316,13 @@ authEndpoints.put("/goLiveText", async (req, res) => {
 });
 
 authEndpoints.get('/images', async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const images = await userDao.getImages(twitchLogin);
   res.send(images);
 });
 
 authEndpoints.post('/images', async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   try {
     const images = JSON.parse(req.body);
     if (!(images instanceof Array) || images.length == 0 ||
@@ -343,7 +348,7 @@ authEndpoints.post('/images', async (req, res) => {
 });
 
 authEndpoints.put("/images", async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   try {
     const images = JSON.parse(req.body);
     if (!(images instanceof Array) || images.length == 0 ||
@@ -397,7 +402,7 @@ authEndpoints.put("/images", async (req, res) => {
 });
 
 authEndpoints.delete('/images/:imageId', async (req, res) => {
-  const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+  const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const imageId = req.params.imageId;
   await userDao.removeImage(twitchLogin, imageId);
   res.sendStatus(200);
@@ -413,7 +418,7 @@ authEndpoints.get('/twitterLoginResponse', async (req, res) => {
   const code = req.query.code;
   try {
     const tokens = await twitterClient.getAuthTokens(state, code);
-    const { twitchLogin } = jwt.verify(req.session.token, AUTH_SECRET, { issuer: "codingvibe"});
+    const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
     
     const userConnections = await userDao.getUserConnections(twitchLogin);
     if (!userConnections) {
