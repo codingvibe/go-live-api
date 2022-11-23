@@ -236,7 +236,7 @@ app.get('/twitchLoginResponse', async (req, res) => {
     "twitchLogin": twitchUser.login
   }, AUTH_SECRET, { expiresIn: 30*60, issuer: "codingvibe" });
 
-  getToken(req) = signedJwt;
+  req.session.token = signedJwt;
   req.session.save((err) => {
     if (err) {
       console.error(err);
