@@ -140,16 +140,24 @@ app.use([
   express.raw({ type: 'application/json'}), // Need raw message body for signature verification,
 ]);
 
+const cookieSetting = {
+  httpOnly: DEPLOYED,
+  secure: DEPLOYED,
+  sameSite: true
+}
+
+if (DEPLOYED) {
+  cookieSetting.domain = "golive.codingvibe.dev"
+} else {
+  cookieSetting.domain = "localhost:3000"
+}
+
 app.use(session({
   saveUninitialized: false,
   resave: false,
   secret: SESSION_SECRET,
   proxy: DEPLOYED,
-  cookie: {
-    httpOnly: DEPLOYED,
-    secure: DEPLOYED,
-    sameSite: true
-  }
+  cookie: cookieSetting
 }));
 
 const whitelist = ['https://golive.codingvibe.dev']
@@ -256,13 +264,21 @@ function getToken(req) {
   if (req.session?.token) {
     return req.session?.token;
   }
-  const cookieArr = req.headers.cookie?.split(';');
-  const cookieMap = {};
-  for (const cookie of cookieArr) {
-    const split = cookie.trim().split('=');
-    cookieMap[split[0]] = split[1];
+  if (req.headers.cookie) {
+    const cookieArr = req.headers.cookie.split(';');
+    if (cookieArr) {
+      const cookieMap = {};
+      for (const cookie of cookieArr) {
+        const split = cookie.trim().split('=');
+        cookieMap[split[0]] = split[1];
+      }
+      return cookieMap['token'];
+    }
   }
-  return cookieMap['token'];
+  if (req.headers.authorization) {
+    return req.headers.authorization
+  }
+  return null;
 }
 
 authEndpoints.use((req, res, next) => {
@@ -316,8 +332,8 @@ authEndpoints.get('/goLiveText', async(req, res) => {
   });
 });
 
-authEndpoints.options('/images');
-authEndpoints.put("/images", async (req, res) => {
+authEndpoints.options('/goLiveText');
+authEndpoints.put("/goLiveText", async (req, res) => {
   const { twitchLogin } = jwt.verify(getToken(req), AUTH_SECRET, { issuer: "codingvibe"});
   const reqBody = JSON.parse(req.body);
   if (!reqBody || !reqBody.goLiveText) {
@@ -373,7 +389,6 @@ authEndpoints.put("/images", async (req, res) => {
       res.status(400).send({"error": "Bad image post body"});
       return;
     }
-    console.log(images);
     // This is probably too clever for my own good.
     const invalidImages = (await Promise.all(images.map(image => image.url)
                                 .map(async(image) => isInvalidImage(image))))
