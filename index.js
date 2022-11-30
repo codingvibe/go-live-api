@@ -205,6 +205,16 @@ app.get('/twitchLogin', async(_, res) => {
   res.redirect(twitchLoginUrl);
 });
 
+/*app.post('/test', async(_, res) => {
+  const userConnections = await userDao.getUserConnections("codingvibe");
+  const refreshToken = getRefreshToken(userConnections, "twitter");
+  console.log(refreshToken);
+  await createTweet(refreshToken, "codingvibe", "{{title}}  https://twitch.tv/{{twitchName}}", {
+    "url": "https://media4.giphy.com/media/bi6RQ5x3tqoSI/giphy.gif",
+    "altText": "A monitor from Code Geass displays some hex data while scrolling down before an ominous 'Error' message appears."
+  });
+})*/
+
 app.get('/twitchLoginResponse', async (req, res) => {
   const state = req.query.state;
   if (!state) {
@@ -559,7 +569,7 @@ async function createTweet(refreshToken, twitchName, tweetText, image) {
 function getRefreshToken(userConnections, platform) {
   return userConnections
     .filter(connection => connection.type == platform)
-    .map(connection => connection.refreshToken);
+    .map(connection => connection.refreshToken).shift();
 }
 
 async function setRefreshToken(twitchName, userConnections, platform, refreshToken) {
